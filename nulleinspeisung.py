@@ -2,14 +2,17 @@ import requests, time
 from requests.auth import HTTPBasicAuth
 
 # Diese Daten müssen angepasst werden: zeile 5 - 12
-serial = "112100000000" # Seriennummern der Hoymiles Wechselrichter
-maximum_wr = 300 # Maximum ausgabe des wechselrichters
+serial      = "112100000000"    # Seriennummern der Hoymiles Wechselrichter
+maximum_wr  = 1500              # Maximum ausgabe des wechselrichters
+zielwert    = 20                # geplanter Bezug aus Netz
+obere_abw   = 15                # erlaubte Abweichung über den Zielwert
+untere_abw  = 15                # erlaubte Abweichung unter den Zielwert
 
-dtuIP = '192.100.100.20' # IP Adresse von OpenDTU
+dtuIP = '192.168.168.97' # IP Adresse von OpenDTU
 dtuNutzer = 'admin' # OpenDTU Nutzername
 dtuPasswort = 'openDTU42' # OpenDTU Passwort
 
-shellyIP = '192.100.100.30' #IP Adresse von Shelly 3EM
+shellyIP = '192.168.168.195' #IP Adresse von Shelly 3EM
 
 
 while True:
@@ -24,13 +27,13 @@ while True:
     power       = r['inverters'][0]['0']['Power']['v'] # Abgabe BKW AC in Watt
 
     # Nimmt Daten von der Shelly 3EM Rest-API und übersetzt sie in ein json-Format
-    phaseA      = requests.get(f'http://{shellyIP}/emeter/0', headers={"Content-Type": "application/json"}).json()['power']
-    phaseB      = requests.get(f'http://{shellyIP}/emeter/1', headers={"Content-Type": "application/json"}).json()['power']
-    phaseC      = requests.get(f'http://{shellyIP}/emeter/2', headers={"Content-Type": "application/json"}).json()['power']
-    grid_sum    = phaseA + phaseB + phaseC # Aktueller Bezug im Chalet - rechnet alle Phasen zusammen
-    setpoint    = 0     # Neues Limit in Watt
+    # phaseA      = requests.get(f'http://{shellyIP}/emeter/0', headers={"Content-Type": "application/json"}).json()['power']
+    # phaseB      = requests.get(f'http://{shellyIP}/emeter/1', headers={"Content-Type": "application/json"}).json()['power']
+    # phaseC      = requests.get(f'http://{shellyIP}/emeter/2', headers={"Content-Type": "application/json"}).json()['power']
+    # grid_sum    = phaseA + phaseB + phaseC # Aktueller Bezug im Chalet - rechnet alle Phasen zusammen
+    grid_sum    = requests.get(f'http://{shellyIP}/status', headers={"Content-Type": "application/json"}).json()['total_power']
 
-    # Setzt ein limit auf das Wechselrichter
+    # Setzt ein limit auf den Wechselrichter
     def setLimit(Serial, Limit):
         headers = {'Content-Type': 'application/x-www-form-urlencoded'}
         payload = f'''data={{"serial":"{Serial}", "limit_type":1, "limit_value":{Limit}}}'''
@@ -38,30 +41,21 @@ while True:
         print('Konfiguration Stauts:', newLimit.json()['type'])
 
     # Werte setzen
-    print("aktueller Bezug - Haus:   ",grid_sum)
+    print("aktueller Bezug - Haus:   ", grid_sum)
+    verbrauch   = power + grid_sum
+    print("aktueller Verbrauch:   ", verbrauch)
+    setpoint    = verbrauch - zielwert
+    print("neues Limit berechnet auf: ",verbrauch," - ",zielwert," = ", setpoint)
     if reachable:
         # Setzen Sie den Grenzwert auf den höchsten Wert, wenn er über dem zulässigen Höchstwert liegt.
-        if (altes_limit >= maximum_wr or grid_sum >= maximum_wr or setpoint >= maximum_wr):
-            print("setze Limiter auf maximum")
+        if ( setpoint >= maximum_wr ):
+            print("setze Maximum: ", maximum_wr)
             setpoint = maximum_wr
 
-        # wir weniger bezogen als maximum_wr dann neues Limit ausrechnen
-        if (grid_sum+altes_limit) <= maximum_wr:
-            setpoint = grid_sum + altes_limit - 5
-            print("setpoint:",grid_sum,"+",altes_limit,"-5 ")
-            print("neues Limit berechnet auf ",setpoint)
-        if setpoint <= 100:
-            setpoint = 100
-            print("setpoint: 100 minimum gesetzt")
-            print("neues Limit festgelegt auf ",setpoint)
-
-        print("setze Einspeiselimit auf: ",setpoint)
-        # neues limit setzen
-        setLimit(serial, setpoint)
-        print("Solarzellenstrom:",power,"  Setpoint:",setpoint)
-
+        # falls setpoint zu weit vom aktuellen Limit abweicht
+        if ( setpoint < altes_limit - untere_abw or setpoint > altes_limit + obere_abw ):
+            print("setze Wechselrichterlimit auf: ", setpoint)
+            # neues limit setzen
+            setLimit(serial, setpoint)
+            print("Solarzellenstrom: ",power,"  Setpoint: ",setpoint)
         time.sleep(5) # wait
-
-    # Wenn der Wechselrichter nicht erreicht werden kann, wird der limit auf maximum gestellt
-    if setpoint == 0: setpoint = grid_sum
-    if not reachable: setpoint = maximum_wr
